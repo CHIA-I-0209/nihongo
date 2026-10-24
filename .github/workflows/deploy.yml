@@ -1,0 +1,43 @@
+# 每次推送到 main 分支，就把 app/ 資料夾發布到 GitHub Pages
+name: 發布到 GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 檢查 config.js 是否已填寫
+        run: |
+          if grep -q "SUPABASE_URL = ''" app/config.js; then
+            echo "::warning file=app/config.js::還沒填 Supabase 網址，App 會顯示設定說明頁"
+          fi
+
+      - name: 自動更新離線快取版本（不用每次手動改 sw.js）
+        run: sed -i "s/^const VERSION = .*/const VERSION = '${GITHUB_SHA::8}';/" app/sw.js
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: app
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

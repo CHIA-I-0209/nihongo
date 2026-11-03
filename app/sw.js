@@ -21,6 +21,7 @@ const SHELL_FILES = [
   'js/auth.js',
   'js/editor.js',
   'js/device.js',
+  'js/packs.js',
   'config.js',
   'icons/icon-192.png',
   'icons/icon-512.png',

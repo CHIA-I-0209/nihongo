@@ -1,9 +1,10 @@
 import { db, requestPersistence } from './db.js';
 import { SEED } from './seed.js';
+import { PACK_DATA } from './packs.js';
 import { buildExercises, buildQueue, interleave, checkAnswer, TYPE_LABEL } from './exercises.js';
-import { newState, schedule, previewInterval, replay } from './fsrs.js';
+import { newState, schedule, previewInterval, replay, retrievability } from './fsrs.js';
 import { bindKanaInput } from './kana.js';
-import { esc, sentenceHtml, wordHtml, reading as tokensReading } from './furigana.js';
+import { esc, sentenceHtml, wordHtml, speechText as tokensReading, translationHtml } from './furigana.js';
 import * as cloud from './cloud.js';
 import { deviceName } from './device.js';
 import {
@@ -89,11 +90,14 @@ async function renderHome() {
   const dueN = queue.due.length;
   const newN = queue.fresh.length;
   const nothing = dueN + newN === 0;
+  // 今天的份量做完後，還可以繼續：多學新的、或複習學過的
+  const moreNew = nothing ? Math.min(state.settings.newLimit, queue.freshTotal) : 0;
+  const canPractice = learned > 0;
 
   let lead;
   if (total === 0) lead = '還沒有教材。到「單字」分頁新增第一個單字吧。';
   else if (nothing && queue.freshTotal === 0 && learned === total) lead = '所有題目都學過了，等複習時間到再回來。';
-  else if (nothing) lead = '今天的份量完成了。明天會有新的複習。';
+  else if (nothing) lead = '今天的份量完成了。還想再練的話，可以繼續。';
   else if (dueN && newN) lead = `要複習 ${dueN} 題，再學 ${newN} 題新的。`;
   else if (dueN) lead = `要複習 ${dueN} 題。`;
   else lead = `可以學 ${newN} 題新的。`;
@@ -102,7 +106,12 @@ async function renderHome() {
     <section class="home">
       <p class="date">${new Date().toLocaleDateString('zh-TW', { month: 'long', day: 'numeric', weekday: 'long' })}</p>
       <h1 class="lead">${esc(lead)}</h1>
-      <button type="button" class="primary big" id="start" ${nothing ? 'disabled' : ''}>開始學習</button>
+      ${nothing
+        ? `${moreNew ? `<button type="button" class="primary big" id="more-new">再學 ${moreNew} 題新的</button>` : ''}
+           ${canPractice ? `<button type="button" class="${moreNew ? '' : 'primary '}big" id="practice">複習學過的題目</button>` : ''}`
+        : `<button type="button" class="primary big" id="start">開始學習</button>
+           ${canPractice ? '<button type="button" class="big" id="practice">只複習學過的題目</button>' : ''}`}
+      ${canPractice ? '<p class="help home-help">複習學過的題目：從最容易忘記的開始，一次 20 題，隨時可以再來。</p>' : ''}
 
       <dl class="facts">
         <div><dt>連續學習</dt><dd><strong>${days}</strong> 天</dd></div>
@@ -117,18 +126,46 @@ async function renderHome() {
         <button type="button" class="link" id="sync-now">立即同步</button>
       </p>
     </section>`;
-  document.getElementById('start')?.addEventListener('click', startSession);
+  document.getElementById('start')?.addEventListener('click', () => startSession('today'));
+  document.getElementById('more-new')?.addEventListener('click', () => startSession('more'));
+  document.getElementById('practice')?.addEventListener('click', () => startSession('practice'));
   document.getElementById('sync-now')?.addEventListener('click', async () => { await runSync(); renderHome(); });
 }
 
 /* ---------- 學習 ---------- */
 
-async function startSession() {
+/**
+ * mode：
+ *   today    今天到期的複習 + 今天的新題
+ *   more     超過每日上限，再學一批新題
+ *   practice 複習學過的題目（不管有沒有到期），最容易忘的排前面
+ */
+async function startSession(mode = 'today') {
   const { queue } = await todayStats();
-  const items = interleave(queue.due, queue.fresh);
+  let items;
+  if (mode === 'more') {
+    const extra = buildQueue(state.exercises, state.reviews, { newLimit: state.settings.newLimit, newDoneToday: 0 });
+    items = interleave(extra.due, extra.fresh);
+  } else if (mode === 'practice') {
+    const now = Date.now();
+    const learned = state.exercises.list
+      .filter((e) => state.reviews[e.id] && state.reviews[e.id].state !== 'new')
+      .map((e) => {
+        const r = state.reviews[e.id];
+        return { e, p: retrievability(Math.max(0, (now - r.lastReview) / 86400000), r.stability) };
+      })
+      .sort((a, b) => a.p - b.p)
+      .slice(0, 20)
+      .map((x) => x.e);
+    // 稍微打散，避免同一個字的題目連在一起
+    items = learned.map((e, i) => ({ e, k: i + Math.random() * 6 })).sort((a, b) => a.k - b.k).map((x) => x.e);
+  } else {
+    items = interleave(queue.due, queue.fresh);
+  }
   if (!items.length) return;
   state.session = { items, idx: 0, done: 0, correct: 0, answered: 0, startedAt: Date.now() };
-  location.hash = '#/study';
+  if (location.hash === '#/study') renderStudy(); // 已經在學習畫面（再練一輪）
+  else location.hash = '#/study';
 }
 
 function promptHtml(ex, rv) {
@@ -156,7 +193,7 @@ function promptHtml(ex, rv) {
         ? '選出空格裡的助詞'
         : `填入正確的形式${g ? `（<span lang="ja">${esc(g.title)}</span>）` : ''}`;
       return `${intro}<div class="prompt sentence" lang="ja">${sentenceHtml(ex.tokens, { furigana: fg, blank: ex.blankIndex })}</div>
-        <p class="translation">${esc(ex.sentence.zh)}</p>
+        <p class="translation">${translationHtml(ex.sentence.zh)}</p>
         <p class="ask">${ask}</p>`;
     }
   }
@@ -218,7 +255,7 @@ function renderStudy() {
         <span class="count">${s.idx + 1}／${s.items.length}</span>
       </header>
       <article class="card" id="card">
-        <p class="kind">${esc(TYPE_LABEL[ex.type])}${isNew ? '<span class="new">新</span>' : ''}</p>
+        <p class="kind">${ex.dialogue ? '對話・' : ''}${esc(TYPE_LABEL[ex.type])}${isNew ? '<span class="new">新</span>' : ''}</p>
         ${promptHtml(ex, rv)}
         <div class="mark-slot" id="mark"></div>
       </article>
@@ -336,7 +373,14 @@ async function renderSummary() {
       </dl>
       <p class="sync-line" id="sum-sync">正在同步…</p>
       <a class="button primary big" href="#/">回首頁</a>
+      <button type="button" class="big again" id="again">再練一輪</button>
     </section>`;
+  // 再練一輪：今天還有到期或新題就先做那些，否則複習學過的題目
+  document.getElementById('again').onclick = async () => {
+    await writeChain;
+    const { queue } = await todayStats();
+    startSession(queue.due.length + queue.fresh.length ? 'today' : 'practice');
+  };
   await writeChain;
   const r = await runSync({ quiet: true });
   const el = document.getElementById('sum-sync');
@@ -385,15 +429,70 @@ function renderWords() {
 
 /* ---------- 文法 ---------- */
 
-function renderGrammarList() {
+/* 範例教材包：舊帳號可以一鍵補上後來新增的範例（不會動到自己改過的內容） */
+const PACKS = [
+  {
+    key: 'qa',
+    title: '問答文法範例',
+    desc: '〜か、疑問詞、〜ませんか 共 3 項文法，附 9 組 A 問 B 答的對話練習。',
+    data: {
+      grammar: SEED.grammar.filter((x) => /^gqa\d+$/.test(x.id)),
+      sentences: SEED.sentences.filter((x) => /^sqa\d+$/.test(x.id)),
+    },
+  },
+  {
+    key: 'n5n4',
+    title: 'N5～N4 必備句型',
+    desc: `第 14～94 項句型共 ${PACK_DATA.n5n4.grammar.length} 項文法、${PACK_DATA.n5n4.sentences.length} 句例句，每句都有填空練習。`,
+    data: PACK_DATA.n5n4,
+  },
+];
+
+function packItems(pack, table, have) {
+  return (pack.data[table] || []).filter((x) => !have.has(x.id));
+}
+
+async function availablePacks() {
+  const dismissed = await db.get('dismissedPacks', []);
+  const have = new Set(['words', 'grammar', 'sentences'].flatMap((t) => (state.content[t] || []).map((x) => x.id)));
+  return PACKS.filter((p) => !dismissed.includes(p.key)
+    && ['grammar', 'sentences'].some((t) => packItems(p, t, have).length));
+}
+
+async function addPack(pack) {
+  const counts = {};
+  for (const t of ['words', 'grammar', 'sentences']) {
+    const list = state.content[t] || [];
+    const have = new Set(list.map((x) => x.id));
+    let sort = Math.max(0, ...list.map((x) => Number(x.sort) || 0));
+    const items = packItems(pack, t, have).map((x) => ({ ...x, sort: (sort += 10) }));
+    if (items.length) await cloud.saveItems(t, items);
+    counts[t] = items.length;
+  }
+  await runSync({ quiet: true });
+  await loadAll();
+  return counts;
+}
+
+async function renderGrammarList() {
   const grammar = state.content.grammar || [];
   const sCount = (state.content.sentences || []).length;
+  const packs = await availablePacks();
   $view.innerHTML = `
     <section class="list-page">
       <div class="title-row">
         <h1>文法 <span class="sub">${grammar.length} 項</span></h1>
         <a class="button" href="#/edit/grammar/new">新增文法</a>
       </div>
+      ${packs.map((p) => `
+        <div class="pack" data-pack="${p.key}">
+          <p class="pack-title">新範例：${esc(p.title)}</p>
+          <p class="pack-desc">${esc(p.desc)}</p>
+          <div class="row">
+            <button type="button" class="primary" data-add-pack="${p.key}">加入</button>
+            <button type="button" class="link" data-dismiss-pack="${p.key}">不用了</button>
+          </div>
+        </div>`).join('')}
       <ul class="grammar">
         ${grammar.map((g) => `<li><a href="#/grammar/${encodeURIComponent(g.id)}">
           <span class="g-title" lang="ja">${esc(g.title)}</span>
@@ -403,6 +502,29 @@ function renderGrammarList() {
       </ul>
       <p class="more"><a href="#/sentences">所有例句（${sCount} 句）</a></p>
     </section>`;
+  $view.querySelectorAll('[data-add-pack]').forEach((b) => {
+    b.onclick = async () => {
+      const pack = PACKS.find((p) => p.key === b.dataset.addPack);
+      b.disabled = true;
+      b.textContent = '加入中…';
+      try {
+        const c = await addPack(pack);
+        toast(`已加入 ${c.grammar} 項文法、${c.sentences} 句例句`);
+        renderGrammarList();
+      } catch (e) {
+        toast(e.code === 'network' ? '需要網路才能加入範例' : e.message);
+        b.disabled = false;
+        b.textContent = '加入';
+      }
+    };
+  });
+  $view.querySelectorAll('[data-dismiss-pack]').forEach((b) => {
+    b.onclick = async () => {
+      const dismissed = await db.get('dismissedPacks', []);
+      await db.set('dismissedPacks', [...dismissed, b.dataset.dismissPack]);
+      b.closest('.pack').remove();
+    };
+  });
 }
 
 function renderGrammarDetail(id) {
@@ -434,7 +556,7 @@ export function sentenceListHtml(sentences, emptyText) {
     return `<li>
       <a class="s-link" href="#/edit/sentences/${encodeURIComponent(s.id)}" aria-label="編輯例句">
         <p class="sentence" lang="ja">${sentenceHtml(tokens, { furigana: state.settings.furigana, reveal: true, blank: -1 })}</p>
-        <p class="translation">${esc(s.zh)}</p>
+        <p class="translation">${translationHtml(s.zh)}</p>
       </a>
       ${speakBtn(tokensReading(tokens))}
     </li>`;
@@ -588,13 +710,14 @@ export async function route() {
   if (!page) await renderHome();
   else if (page === 'study') state.session ? renderStudy() : (location.hash = '#/');
   else if (page === 'words') renderWords();
-  else if (page === 'grammar') arg ? renderGrammarDetail(decodeURIComponent(arg)) : renderGrammarList();
+  else if (page === 'grammar') arg ? renderGrammarDetail(decodeURIComponent(arg)) : await renderGrammarList();
   else if (page === 'sentences') renderSentenceList();
   else if (page === 'edit' && ['words', 'grammar', 'sentences'].includes(arg)) {
     renderEditor(arg, decodeURIComponent(arg2 || 'new'), new URLSearchParams(query));
   } else if (page === 'settings') await renderSettings();
   else location.hash = '#/';
-  if (page !== 'study') window.scrollTo(0, 0);
+  if (page !== 'study') $view.scrollTop = 0;
+  updateToTop();
 }
 
 function showLogin() {
@@ -617,6 +740,27 @@ async function afterSignIn() {
   if (location.hash && location.hash !== '#/') location.hash = '#/';
   else await route();
 }
+
+/* ---------- 回到最上面 ---------- */
+
+const $toTop = document.getElementById('to-top');
+function updateToTop() {
+  $toTop.hidden = $view.scrollTop < 400;
+}
+function scrollToTop() {
+  const smooth = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $view.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'auto' });
+}
+$view.addEventListener('scroll', updateToTop, { passive: true });
+$toTop.addEventListener('click', scrollToTop);
+// 點目前所在的分頁也會回到最上面（和 iPhone 的 App 一樣）
+document.querySelector('.tabs').addEventListener('click', (e) => {
+  const a = e.target.closest('a[aria-current]');
+  if (a && (location.hash || '#/') === a.getAttribute('href')) {
+    e.preventDefault();
+    scrollToTop();
+  }
+});
 
 /* ---------- Service Worker ---------- */
 

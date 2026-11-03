@@ -1,9 +1,9 @@
 // 從教材自動產生題目
 import { conjugate, formsFor } from './conjugate.js';
-import { parseJp, surface, reading } from './furigana.js';
+import { parseJp, surface, reading, isDialogue } from './furigana.js';
 import { hasKanji, normalizeAnswer } from './kana.js';
 
-export const PARTICLES = ['は', 'が', 'を', 'に', 'で', 'へ', 'と', 'も'];
+export const PARTICLES = ['は', 'が', 'を', 'に', 'で', 'へ', 'と', 'も', 'か'];
 
 export const TYPE_LABEL = {
   reading: '讀音',
@@ -52,6 +52,7 @@ export function buildExercises(content) {
   sentences.forEach((s, i) => {
     if (!s.id || !s.jp) return;
     const tokens = parseJp(s.jp);
+    const dialogue = isDialogue(s.jp);
     const ids = String(s.words || '').split(',').map((x) => x.trim()).filter(Boolean);
     const after = Math.max(-1, ...ids.map((id) => wordOrder[id] ?? -1));
     const base = (after >= 0 ? after + 5 : words.length * 10 + i * 10) + i * 0.01;
@@ -61,7 +62,7 @@ export function buildExercises(content) {
         const ans = surface(b.tokens);
         list.push({
           id: `s:${s.id}:p${b.index}`, type: 'particle', order: base + 0.1 * b.index, sentence: s, tokens,
-          blankIndex: b.index, answers: [ans], display: ans, grammar: g,
+          blankIndex: b.index, answers: [ans], display: ans, grammar: g, dialogue,
           choices: PARTICLES.includes(ans) ? PARTICLES : [...PARTICLES, ans],
         });
       } else {
@@ -69,7 +70,7 @@ export function buildExercises(content) {
         const rd = reading(b.tokens);
         list.push({
           id: `s:${s.id}:g${b.index}`, type: 'grammar', order: base + 3, sentence: s, tokens,
-          blankIndex: b.index, grammar: g, answers: [...new Set([sf, rd])], display: sf, kana: rd,
+          blankIndex: b.index, grammar: g, answers: [...new Set([sf, rd])], display: sf, kana: rd, dialogue,
         });
       }
     });
@@ -90,21 +91,33 @@ export function checkAnswer(ex, input) {
  */
 export function buildQueue(exercises, reviewsById, { newLimit, newDoneToday, now = Date.now() }) {
   const endOfDay = new Date(now); endOfDay.setHours(23, 59, 59, 999);
+  const learned = (id) => reviewsById[id] && reviewsById[id].state !== 'new';
   const due = [];
-  const fresh = [];
+  const freshWords = [];
+  const freshSentences = [];
   for (const ex of exercises.list) {
     const r = reviewsById[ex.id];
     if (r && r.state !== 'new') {
       if (r.due <= endOfDay.getTime()) due.push(ex);
+      continue;
+    }
+    if (ex.requires && !learned(ex.requires)) continue;
+    if (ex.sentence) {
+      // 例句等它用到的單字都學過才出（沒有對應單字的例句隨時可出）
+      const ids = String(ex.sentence.words || '').split(',').map((x) => x.trim()).filter(Boolean);
+      const ready = ids.every((id) => !exercises.wordById[id] || learned(`w:${id}:recall`));
+      if (ready) freshSentences.push(ex);
     } else {
-      if (ex.requires) {
-        const req = reviewsById[ex.requires];
-        if (!req || req.state === 'new') continue;
-      }
-      fresh.push(ex);
+      freshWords.push(ex);
     }
   }
   due.sort((a, b) => reviewsById[a.id].due - reviewsById[b.id].due);
+  // 新題：單字和例句（文法、助詞）輪流出，文法不用等所有單字學完
+  const fresh = [];
+  for (let i = 0; i < Math.max(freshWords.length, freshSentences.length); i++) {
+    if (i < freshWords.length) fresh.push(freshWords[i]);
+    if (i < freshSentences.length) fresh.push(freshSentences[i]);
+  }
   const room = Math.max(0, newLimit - newDoneToday);
   return { due, fresh: fresh.slice(0, room), freshTotal: fresh.length };
 }

@@ -66,18 +66,56 @@ function inlineHtml(tokens, furigana) {
   }).join('');
 }
 
+const SPEAKER = /^\s*([A-Za-zＡ-Ｚａ-ｚ])[：:]\s*/;
+
+/** 例句是不是對話（任何一行以「A：」「B：」開頭） */
+export function isDialogue(jp) {
+  return String(jp || '').split('\n').some((line) => SPEAKER.test(line));
+}
+
+/** 把多行的 HTML 排成對話：每行一列，前面加上說話者標籤 */
+function linesHtml(html) {
+  const lines = html.split('\n').filter((l) => l.trim() !== '');
+  if (lines.length <= 1 && !SPEAKER.test(html)) return html;
+  return `<span class="dlg">${lines.map((line) => {
+    const m = line.match(SPEAKER);
+    if (!m) return `<span class="dlg-line"><span class="dlg-text">${line}</span></span>`;
+    const who = m[1].normalize('NFKC').toUpperCase();
+    return `<span class="dlg-line"><span class="speaker speaker-${who === 'A' ? 'a' : 'b'}">${who}</span><span class="dlg-text">${line.slice(m[0].length)}</span></span>`;
+  }).join('')}</span>`;
+}
+
+/** 中文翻譯也照行排 */
+export function translationHtml(zh) {
+  return linesHtml(esc(zh));
+}
+
+/** 給語音念的文字：去掉「A：」「B：」，換行改成句號停頓 */
+export function speechText(tokens) {
+  return reading(tokens)
+    .split('\n')
+    .map((l) => l.replace(SPEAKER, '').trim())
+    .filter(Boolean)
+    .join('。');
+}
+
 /**
  * 產生例句 HTML
  * opts.blank    要挖空的挖空編號（undefined 表示全部填回）
  * opts.reveal   挖空處顯示答案並標示
  */
-export function sentenceHtml(tokens, { furigana = true, blank, reveal = false, hint = true } = {}) {
+export function sentenceHtml(tokens, opts = {}) {
+  return linesHtml(sentenceInline(tokens, opts));
+}
+
+function sentenceInline(tokens, { furigana = true, blank, reveal = false, hint = true } = {}) {
   return tokens.map((t) => {
     if (t.t !== 'blank') return inlineHtml([t], furigana);
     if (t.index === blank) {
       if (reveal) return `<mark class="filled">${inlineHtml(t.tokens, furigana)}</mark>`;
       const h = hint && t.hint ? `<span class="hint">（${esc(t.hint)}）</span>` : '';
-      return `<span class="gap" aria-label="空格">　　</span>${h}`;
+      // 空格和提示包在一起，換行時不會被拆開
+      return `<span class="blank"><span class="gap" aria-label="空格">　　</span>${h}</span>`;
     }
     return inlineHtml(t.tokens, furigana);
   }).join('');

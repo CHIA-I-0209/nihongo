@@ -791,6 +791,7 @@ function registerSW() {
 /* ---------- 啟動 ---------- */
 
 (async function init() {
+  window.__appStarted = true;
   registerSW();
   if (!cloud.isConfigured()) {
     document.body.classList.add('signed-out');

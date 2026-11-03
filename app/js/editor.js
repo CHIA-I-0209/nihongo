@@ -42,7 +42,7 @@ function fieldsFor(table) {
   }
   return [
     { key: 'jp', label: '日文例句', required: true, type: 'textarea', lang: 'ja', tools: true },
-    { key: 'zh', label: '中文翻譯', required: true },
+    { key: 'zh', label: '中文翻譯', required: true, type: 'textarea', rows: 2, hint: '對話一行一句，可以同樣寫 A：B：' },
     {
       key: 'grammar', label: '對應的文法', type: 'select',
       options: [['', '（沒有）'], ...(state.content.grammar || []).map((g) => [g.id, g.title])],
@@ -143,12 +143,14 @@ function fieldHtml(f, v) {
   if (f.type === 'select') {
     control = `<select id="${id}" name="${f.key}"${lang}>${f.options.map(([val, label]) => `<option value="${esc(val)}" ${String(val) === String(value) ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
   } else if (f.type === 'textarea') {
-    control = `<textarea id="${id}" name="${f.key}" rows="${f.tools ? 3 : 4}"${lang} ${f.required ? 'required' : ''}>${esc(value)}</textarea>`;
+    control = `<textarea id="${id}" name="${f.key}" rows="${f.rows || (f.tools ? 3 : 4)}"${lang} ${f.required ? 'required' : ''}>${esc(value)}</textarea>`;
   } else {
     control = `<input id="${id}" name="${f.key}" type="text"${lang} autocomplete="off" ${f.kana ? 'autocapitalize="off" autocorrect="off" spellcheck="false"' : ''} ${f.required ? 'required' : ''} value="${esc(value)}">`;
   }
   const tools = f.tools ? `
     <div class="mark-tools" role="group" aria-label="標記工具">
+      <button type="button" data-speaker="A" class="speaker-btn"><span class="speaker speaker-a">A</span>問句</button>
+      <button type="button" data-speaker="B" class="speaker-btn"><span class="speaker speaker-b">B</span>回答</button>
       <button type="button" data-wrap="ruby">加振假名</button>
       <button type="button" data-wrap="p">助詞挖空</button>
       <button type="button" data-wrap="g">文法挖空</button>
@@ -166,6 +168,31 @@ function readForm(form, table, base) {
   if (v.jlpt !== undefined) v.jlpt = Number(v.jlpt) || 5;
   if (table === 'words' && v.pos !== 'verb') v.verbClass = '';
   return v;
+}
+
+/**
+ * 對話：A 把目前這一行設成問句；B 在目前這一行後面加一行回答
+ * （目前這一行是空的，就直接把這一行設成該說話者）
+ */
+function addSpeaker(ta, who) {
+  const v = ta.value;
+  const pos = ta.selectionStart;
+  const lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+  let lineEnd = v.indexOf('\n', pos);
+  if (lineEnd === -1) lineEnd = v.length;
+  const line = v.slice(lineStart, lineEnd);
+  const body = line.replace(/^\s*[A-Za-zＡ-Ｚ][：:]\s*/, '');
+  let start; let end; let text;
+  if (!body.trim() || who === 'A') {
+    // 這一行改成（或加上）說話者
+    start = lineStart; end = lineEnd; text = `${who}：${body}`;
+  } else {
+    // 在這一行後面另起一行
+    start = lineEnd; end = lineEnd; text = `\n${who}：`;
+  }
+  ta.setRangeText(text, start, end, 'end');
+  ta.focus();
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 /** 在選取的文字前後加上標記 */
@@ -200,6 +227,7 @@ export function renderEditor(table, id, query) {
         ${fields.map((f) => fieldHtml(f, base)).join('')}
         ${table === 'sentences' ? `
           <details class="format-help"><summary>標記格式說明</summary>
+            <p>對話：每一行開頭寫 <code>A：</code>（問）或 <code>B：</code>（答），問句、答句都可以挖空</p>
             <p><code lang="ja">{漢字|かな}</code>：振假名</p>
             <p><code lang="ja">[[p:を]]</code>：把助詞挖空，出選擇題</p>
             <p><code lang="ja">[[g:食べました|食べる]]</code>：把文法挖空，「|」後面是提示</p>
@@ -229,6 +257,10 @@ export function renderEditor(table, id, query) {
   refresh();
 
   if (form.elements.kana) bindKanaInput(form.elements.kana);
+  form.querySelectorAll('[data-speaker]').forEach((b) => {
+    b.addEventListener('pointerdown', (e) => e.preventDefault());
+    b.onclick = () => addSpeaker(form.elements.jp, b.dataset.speaker);
+  });
   form.querySelectorAll('[data-wrap]').forEach((b) => {
     b.addEventListener('pointerdown', (e) => e.preventDefault()); // 保留文字選取
     b.onclick = () => wrapSelection(form.elements.jp, b.dataset.wrap);

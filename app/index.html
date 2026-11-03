@@ -42,8 +42,30 @@
     </a>
   </nav>
 
+  <button type="button" id="to-top" class="to-top" aria-label="回到最上面" hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+  </button>
+
   <div id="toast" role="status" aria-live="polite" hidden></div>
 
   <script type="module" src="js/main.js"></script>
+  <script>
+    // 保險：App 沒有在 8 秒內啟動（例如更新時檔案沒上傳齊），就顯示說明和「重新載入」按鈕，
+    // 按下去會清掉舊的快取再重新整理，不會停在一片空白
+    setTimeout(function () {
+      if (window.__appStarted) return;
+      var v = document.getElementById('view');
+      if (!v || v.children.length) return;
+      v.innerHTML = '<section class="home"><h1 class="lead">App 沒有正常啟動</h1>'
+        + '<p class="help">可能是更新時有檔案沒上傳齊，或網路不穩。先按下面的按鈕重新載入；還是不行的話，請確認 GitHub 上的檔案都是最新版。</p>'
+        + '<button type="button" class="primary big" id="hard-reload">重新載入</button></section>';
+      document.getElementById('hard-reload').onclick = function () {
+        var jobs = [];
+        if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+        if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
+        Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+      };
+    }, 8000);
+  </script>
 </body>
 </html>

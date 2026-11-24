@@ -6,6 +6,7 @@ import { esc, parseJp, sentenceHtml, surface, wordHtml } from './furigana.js';
 import { bindKanaInput } from './kana.js';
 import { POS_LABEL, state, $view, toast } from './ui.js';
 import { loadAll, sentenceListHtml } from './main.js';
+import { findDuplicate, itemName } from './dupes.js';
 
 const PREFIX = { words: 'w', grammar: 'g', sentences: 's' };
 const NOUN = { words: '單字', grammar: '文法', sentences: '例句' };
@@ -233,6 +234,7 @@ export function renderEditor(table, id, query) {
             <p><code lang="ja">[[g:食べました|食べる]]</code>：把文法挖空，「|」後面是提示</p>
           </details>` : ''}
         ${table !== 'grammar' ? '<div class="preview" id="preview" aria-live="polite"></div>' : ''}
+        <div class="dup-warn" id="dup-warn" aria-live="polite" hidden></div>
         <p class="form-error" id="edit-error" role="alert" hidden></p>
         <div class="row">
           <button type="submit" class="primary">${existing ? '儲存' : `新增${NOUN[table]}`}</button>
@@ -245,12 +247,31 @@ export function renderEditor(table, id, query) {
   const form = document.getElementById('edit-form');
   const err = document.getElementById('edit-error');
   const preview = document.getElementById('preview');
+  const dupWarn = document.getElementById('dup-warn');
+  // 重複提示放在造成重複的欄位正下方，打字時就看得到
+  const keyField = form.querySelector(`[data-field="${{ words: 'kana', grammar: 'title', sentences: 'jp' }[table]}"]`);
+  if (keyField) keyField.after(dupWarn);
+  const linkTo = (x) => (table === 'grammar' ? `#/grammar/${encodeURIComponent(x.id)}` : `#/edit/${table}/${encodeURIComponent(x.id)}`);
+  /** 防呆：一模一樣的擋下來，類似的提醒 */
+  const checkDup = (v) => {
+    const d = findDuplicate(table, list, v, existing && existing.id);
+    if (d.block) {
+      dupWarn.className = 'dup-warn is-block';
+      dupWarn.innerHTML = `已經有這個${NOUN[table]}了：<a href="${linkTo(d.block)}" lang="ja">${esc(itemName(table, d.block))}</a>，不能重複新增。`;
+    } else if (d.similar.length) {
+      dupWarn.className = 'dup-warn';
+      dupWarn.innerHTML = `類似的${NOUN[table]}：${d.similar.slice(0, 3).map((x) => `<a href="${linkTo(x)}" lang="ja">${esc(itemName(table, x))}</a>`).join('、')}。確定不是同一個的話，可以照常儲存。`;
+    }
+    dupWarn.hidden = !d.block && !d.similar.length;
+    return d;
+  };
   const refresh = () => {
     const v = readForm(form, table, base);
     fields.filter((f) => f.showIf).forEach((f) => {
       form.querySelector(`[data-field="${f.key}"]`).hidden = !f.showIf(v);
     });
     if (preview) preview.innerHTML = previewHtml(table, v);
+    checkDup(v);
   };
   form.addEventListener('input', refresh);
   form.addEventListener('change', refresh);
@@ -266,7 +287,13 @@ export function renderEditor(table, id, query) {
     b.onclick = () => wrapSelection(form.elements.jp, b.dataset.wrap);
   });
   const first = form.querySelector('input:not([type=checkbox]), textarea');
-  if (!existing) setTimeout(() => first?.focus({ preventScroll: true }), 50);
+  // 自動把游標放到第一欄；但如果已經點了別的欄位，就不要把游標搶走
+  if (!existing) {
+    setTimeout(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body || !form.contains(active)) first?.focus({ preventScroll: true });
+    }, 50);
+  }
 
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -282,6 +309,13 @@ export function renderEditor(table, id, query) {
     if (table === 'words' && v.pos === 'verb' && !v.verbClass) {
       err.textContent = '請選擇動詞種類';
       err.hidden = false;
+      return;
+    }
+    const dup = checkDup(v);
+    if (dup.block) {
+      err.textContent = `「${itemName(table, dup.block)}」已經存在，不能重複新增。要修改的話，請直接編輯原本那一項。`;
+      err.hidden = false;
+      dupWarn.scrollIntoView({ block: 'center', behavior: 'smooth' });
       return;
     }
     if (table === 'sentences') v.words = detectWords(v.jp).map((w) => w.id).join(',');

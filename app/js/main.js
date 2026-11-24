@@ -1,6 +1,7 @@
 import { db, requestPersistence } from './db.js';
 import { SEED } from './seed.js';
 import { PACK_DATA } from './packs.js';
+import { sameGrammar, sameSentence, matchGrammar } from './dupes.js';
 import { buildExercises, buildQueue, interleave, checkAnswer, TYPE_LABEL } from './exercises.js';
 import { newState, schedule, previewInterval, replay, retrievability } from './fsrs.js';
 import { bindKanaInput } from './kana.js';
@@ -12,6 +13,7 @@ import {
 } from './ui.js';
 import { renderLogin, renderSetupNeeded, renderNewPassword } from './auth.js';
 import { renderEditor, renderSentenceList } from './editor.js';
+import { renderImport } from './importer.js';
 import { parseJp as parseSentence } from './furigana.js';
 
 /* ---------- 資料載入 ---------- */
@@ -446,26 +448,56 @@ const PACKS = [
     desc: `第 14～94 項句型共 ${PACK_DATA.n5n4.grammar.length} 項文法、${PACK_DATA.n5n4.sentences.length} 句例句，每句都有填空練習。`,
     data: PACK_DATA.n5n4,
   },
+  {
+    key: 'n4plus',
+    title: 'N4 文法補充',
+    desc: `〜ようです、〜ことができます、〜つもりです、〜予定です、〜てみます、〜ようになります、〜ことにします、〜のに、〜し、〜ために，共 ${PACK_DATA.n4plus.grammar.length} 項文法、${PACK_DATA.n4plus.sentences.length} 句例句。`,
+    data: PACK_DATA.n4plus,
+  },
 ];
 
-function packItems(pack, table, have) {
-  return (pack.data[table] || []).filter((x) => !have.has(x.id));
+/**
+ * 範例包裡還沒加入的項目。除了看編號，也擋掉同名的文法和一樣的例句
+ * （例如你自己先新增過同一個文法），避免重複。
+ * 回傳 { grammar, sentences, words, remap }，remap 是「範例包文法編號 → 你既有的同名文法編號」
+ */
+function packPlan(pack) {
+  const have = {};
+  ['words', 'grammar', 'sentences'].forEach((t) => { have[t] = new Set((state.content[t] || []).map((x) => x.id)); });
+  const remap = {};
+  const grammar = [];
+  for (const g of pack.data.grammar || []) {
+    if (have.grammar.has(g.id)) continue;
+    const same = sameGrammar([...(state.content.grammar || []), ...grammar], g);
+    if (same) remap[g.id] = same.id;
+    else grammar.push(g);
+  }
+  const sentences = [];
+  for (const s0 of pack.data.sentences || []) {
+    if (have.sentences.has(s0.id)) continue;
+    if (sameSentence([...(state.content.sentences || []), ...sentences], s0)) continue;
+    sentences.push(remap[s0.grammar] ? { ...s0, grammar: remap[s0.grammar] } : s0);
+  }
+  const words = (pack.data.words || []).filter((w) => !have.words.has(w.id));
+  return { grammar, sentences, words };
 }
 
 async function availablePacks() {
   const dismissed = await db.get('dismissedPacks', []);
-  const have = new Set(['words', 'grammar', 'sentences'].flatMap((t) => (state.content[t] || []).map((x) => x.id)));
-  return PACKS.filter((p) => !dismissed.includes(p.key)
-    && ['grammar', 'sentences'].some((t) => packItems(p, t, have).length));
+  return PACKS.filter((p) => {
+    if (dismissed.includes(p.key)) return false;
+    const plan = packPlan(p);
+    return plan.grammar.length || plan.sentences.length;
+  });
 }
 
 async function addPack(pack) {
+  const plan = packPlan(pack);
   const counts = {};
   for (const t of ['words', 'grammar', 'sentences']) {
     const list = state.content[t] || [];
-    const have = new Set(list.map((x) => x.id));
     let sort = Math.max(0, ...list.map((x) => Number(x.sort) || 0));
-    const items = packItems(pack, t, have).map((x) => ({ ...x, sort: (sort += 10) }));
+    const items = plan[t].map((x) => ({ ...x, sort: (sort += 10) }));
     if (items.length) await cloud.saveItems(t, items);
     counts[t] = items.length;
   }
@@ -493,15 +525,32 @@ async function renderGrammarList() {
             <button type="button" class="link" data-dismiss-pack="${p.key}">不用了</button>
           </div>
         </div>`).join('')}
-      <ul class="grammar">
-        ${grammar.map((g) => `<li><a href="#/grammar/${encodeURIComponent(g.id)}">
+      ${grammar.length ? '<input type="search" id="gq" placeholder="搜尋文法名稱、接續或中文意思" aria-label="搜尋文法">' : ''}
+      <p class="search-count" id="g-count" aria-live="polite" hidden></p>
+      <ul class="grammar" id="grammar-list"></ul>
+      <p class="more"><a href="#/sentences">所有例句（${sCount} 句）</a>　<a href="#/import">匯入範例包</a></p>
+    </section>`;
+  const glist = document.getElementById('grammar-list');
+  const gcount = document.getElementById('g-count');
+  const drawGrammar = (q = '') => {
+    const rows = grammar.filter((g) => matchGrammar(g, q));
+    glist.innerHTML = rows.map((g) => `<li><a href="#/grammar/${encodeURIComponent(g.id)}">
           <span class="g-title" lang="ja">${esc(g.title)}</span>
           <span class="g-meaning">${esc(g.meaning)}</span>
           <span class="g-level">N${esc(g.jlpt)}</span>
-        </a></li>`).join('') || '<li class="empty">還沒有文法。</li>'}
-      </ul>
-      <p class="more"><a href="#/sentences">所有例句（${sCount} 句）</a></p>
-    </section>`;
+        </a></li>`).join('') || `<li class="empty">${grammar.length ? '找不到符合的文法。' : '還沒有文法。'}</li>`;
+    gcount.hidden = !q.trim();
+    gcount.textContent = `找到 ${rows.length} 項`;
+    try { sessionStorage.setItem('grammarQuery', q); } catch (e) { /* 忽略 */ }
+  };
+  let lastQ = '';
+  try { lastQ = sessionStorage.getItem('grammarQuery') || ''; } catch (e) { /* 忽略 */ }
+  const gq = document.getElementById('gq');
+  if (gq) {
+    gq.value = lastQ;
+    gq.addEventListener('input', () => drawGrammar(gq.value));
+  }
+  drawGrammar(gq ? lastQ : '');
   $view.querySelectorAll('[data-add-pack]').forEach((b) => {
     b.onclick = async () => {
       const pack = PACKS.find((p) => p.key === b.dataset.addPack);
@@ -598,6 +647,7 @@ async function renderSettings() {
       <h2>資料</h2>
       <p class="help">教材和學習紀錄都存在雲端，這台裝置上另有一份副本，沒網路時也能學習。${persisted ? '' : '瀏覽器可能在空間不足時清掉副本，重新登入就會從雲端下載回來。'}</p>
       <div class="row wrap">
+        <a class="button" href="#/import">匯入範例包</a>
         <button type="button" id="export">匯出備份</button>
         <label class="button file">匯入備份<input type="file" id="import" accept="application/json" hidden></label>
         <button type="button" id="reset" class="danger">清除學習紀錄</button>
@@ -699,7 +749,7 @@ export async function route() {
   const [, page, arg, arg2] = path.split('/');
   document.body.dataset.page = page || 'home';
   document.body.classList.remove('signed-out');
-  const tabOf = { edit: arg === 'words' ? 'words' : 'grammar', sentences: 'grammar', study: 'home' };
+  const tabOf = { edit: arg === 'words' ? 'words' : 'grammar', sentences: 'grammar', import: 'grammar', study: 'home' };
   const current = tabOf[page] || page || 'home';
   document.querySelectorAll('.tabs a').forEach((a) => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page');
@@ -712,6 +762,7 @@ export async function route() {
   else if (page === 'words') renderWords();
   else if (page === 'grammar') arg ? renderGrammarDetail(decodeURIComponent(arg)) : await renderGrammarList();
   else if (page === 'sentences') renderSentenceList();
+  else if (page === 'import') renderImport();
   else if (page === 'edit' && ['words', 'grammar', 'sentences'].includes(arg)) {
     renderEditor(arg, decodeURIComponent(arg2 || 'new'), new URLSearchParams(query));
   } else if (page === 'settings') await renderSettings();

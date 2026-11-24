@@ -388,3 +388,28 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.9em;
 /* 首頁的第二個按鈕、回合結束的再練一輪 */
 .home .big + .big, .summary .big + .big { margin-top: 10px; }
 .home-help { margin-top: 10px; }
+
+/* 防呆提示 */
+.dup-warn { border-radius: var(--radius-s); padding: 10px 12px; font-size: 0.92rem; background: var(--tint); color: var(--ink); }
+.dup-warn.is-block { background: transparent; border: 1.5px solid var(--pen); color: var(--pen); }
+.dup-warn a { color: inherit; font-weight: 600; }
+.dup-warn[hidden] { display: none; }
+
+/* 文法搜尋 */
+.list-page #gq { margin-bottom: 8px; }
+.search-count { color: var(--ink-soft); font-size: 0.85rem; margin: 0 0 4px; }
+.search-count[hidden] { display: none; }
+
+/* 匯入範例包 */
+.import .big.file { width: 100%; }
+.paste-box summary { cursor: pointer; color: var(--ink-soft); font-size: 0.95rem; }
+.paste-box textarea { margin: 8px 0; font: 0.85rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+.import-card { margin-top: 16px; }
+.import-table { border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 0.92rem; }
+.import-table th, .import-table td { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
+.import-table thead th { color: var(--ink-soft); font-weight: 400; font-size: 0.85rem; }
+.import-table td { font-variant-numeric: tabular-nums; }
+.import-details { font-size: 0.9rem; margin-top: 8px; }
+.import-details summary { cursor: pointer; }
+.import-details ul { margin: 6px 0 0; padding-left: 1.2em; color: var(--ink-soft); }
+.more a + a { margin-left: 8px; }

@@ -1,4 +1,11 @@
 # 每次推送到 main 分支，就把 app/ 資料夾發布到 GitHub Pages
+#
+# 分成兩個階段：
+#   build  ：整理檔案並上傳
+#   deploy ：發布上傳好的檔案
+# 2026 年 11 月起，GitHub 的發布步驟有時會在檔案剛上傳完時找不到檔案
+# （"No artifacts named github-pages were found"）。分成兩個階段可以避開，
+# 萬一還是找不到，會等 60 秒自動再試一次；需要手動重試時，只會重跑發布，不會重複上傳。
 name: 發布到 GitHub Pages
 
 on:
@@ -16,11 +23,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,11 +37,29 @@ jobs:
       - name: 自動更新離線快取版本（不用每次手動改 sw.js）
         run: sed -i "s/^const VERSION = .*/const VERSION = '${GITHUB_SHA::8}';/" app/sw.js
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: app
 
-      - id: deployment
-        uses: actions/deploy-pages@v4
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy-retry.outputs.page_url }}
+    steps:
+      - name: 發布
+        id: deploy
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+
+      - name: 發布失敗的話，等 60 秒再試一次
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 60
+
+      - name: 再試一次發布
+        id: deploy-retry
+        if: steps.deploy.outcome == 'failure'
+        uses: actions/deploy-pages@v5
